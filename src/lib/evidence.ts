@@ -24,7 +24,7 @@ export function createEvidenceNote({ lesson, responses, revision, nextMove }: {
     .map((key) => `${counts[key]} ${labels[key]}`)
     .join(", ");
   const revisionLine = revision
-    ? `One anonymous revision saved: “${revision.claim}” Evidence named: “${revision.evidence}”`
+    ? `One anonymous exit ticket saved: “${revision.claim}” Evidence named: “${revision.evidence}” Learner signal: ${formatReasoningShift(revision.shift)}.${revision.counterpoint ? ` Counterpoint question: “${revision.counterpoint}”` : ""}`
     : "No student revision has been saved in this demo session yet.";
 
   return [
@@ -36,4 +36,12 @@ export function createEvidenceNote({ lesson, responses, revision, nextMove }: {
     `Suggested next move: ${nextMove}`,
     "Teacher note: This is formative evidence for teacher review, not a grade or student record."
   ].join("\n\n");
+}
+
+export function formatReasoningShift(shift: Revision["shift"] | undefined): string {
+  return {
+    changed: "my thinking changed",
+    strengthened: "my thinking strengthened",
+    "still-thinking": "I am still thinking"
+  }[shift ?? "still-thinking"];
 }
