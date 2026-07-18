@@ -40,6 +40,8 @@ export type ProtocolStep = {
 export type Revision = {
   claim: string;
   evidence: string;
+  shift: "changed" | "strengthened" | "still-thinking";
+  counterpoint?: string;
   savedAt: string;
 };
 
@@ -56,7 +58,10 @@ export type AnalysisResult = {
 export type CounterpointDraft = {
   lesson: Lesson;
   responses: StudentResponse[];
+  excludedResponses?: StudentResponse[];
   viewpoints: Viewpoint[];
+  reviewedViewpointIds?: ViewpointKey[];
+  mapApproved?: boolean;
   protocol: ProtocolStep[];
   teacherMove: string;
   studentPrompt: string;

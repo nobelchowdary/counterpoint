@@ -10,13 +10,22 @@ Counterpoint turns a class’s short written answers into anonymous, teacher-app
 
 ## What works now
 
-1. A teacher can edit a learning goal and discussion question, or paste 3–30 anonymous `claim | evidence` responses for a new local session.
-2. A reviewable thinking map keeps every anonymous response linked to a viewpoint.
-3. Teachers can edit viewpoint wording, rebalance mixed-reasoning groups, and lock reviewed groups.
+1. A teacher can edit a learning goal and discussion question, or paste 3–30 anonymous `claim | evidence` responses for a new local session. The import view has a safe sample, an explicit de-identification confirmation, and explains that drafts stay in the current browser.
+2. A review studio keeps every anonymous response linked to a viewpoint. Teachers can rename patterns, mark each pathway reviewed, move evidence between pathways, exclude a weak source without deleting it, restore it later, or merge pathways before approval.
+3. The thinking map cannot advance until the teacher has reviewed all three pathways and explicitly approved it for class. Mixed-reasoning groups are then generated deterministically, and teachers can lock or rebalance them.
 4. A teacher can edit and approve a four-step evidence discussion protocol.
-5. The student preview supports an independent claim-and-evidence revision.
-6. The evidence view records only actual saved revisions, and can copy or download a teacher-owned text note.
-7. Teacher edits persist locally in the browser. The reset icon in the upper-right restores the fixture.
+5. The student-facing classroom card shows anonymous claims *and their evidence*, a visible eight-minute discussion timer, an explicit “what would change your mind?” prompt, and no model answer.
+6. The independent two-question exit ticket asks for a best claim and the evidence that mattered, then lets a learner indicate whether their thinking changed, strengthened, or is still developing.
+7. The impact loop records only an actual submitted exit ticket—not an invented class-wide outcome—and can copy or download a teacher-owned text note.
+8. Teacher edits persist locally in the browser. The reset icon in the upper-right restores the fixture. The layout is responsive for a tablet or phone demo.
+
+## 60-second judge demo
+
+1. Select **Reveal the thinking**.
+2. In the review studio, click each pathway, show the linked evidence, then mark all three as reviewed. Point out that a teacher can move, exclude, restore, or merge evidence before approval.
+3. Select **Approve map for class**, then **Build discussion groups** and **Approve groups for class**.
+4. Open the **classroom group card**. Start the timer and show that students receive anonymous claims, evidence, and a productive counterpoint question—not an answer from AI.
+5. Save the two-question exit ticket to reveal the impact loop and the teacher-owned formative note.
 
 ## Run locally
 
@@ -64,7 +73,9 @@ anonymous responses
         │                                      │
         └── deterministic grouping rule ───────┘
                                                │
-teacher reviews / edits / approves ──→ student evidence discussion
+teacher reviews / edits / approves ──→ timed classroom evidence discussion
+                                               │
+                         two-question exit ticket / reasoning signal
                                                │
                                   editable formative evidence note
 ```
@@ -72,6 +83,7 @@ teacher reviews / edits / approves ──→ student evidence discussion
 - [`src/lib/grouping.ts`](src/lib/grouping.ts) owns transparent student-group placement; the model never silently controls grouping.
 - [`src/lib/analysis.ts`](src/lib/analysis.ts) validates any model result and owns the reliable offline fallback.
 - [`src/lib/import.ts`](src/lib/import.ts) accepts a small, teacher-confirmed import format, assigns neutral aliases in the UI, and blocks obvious email/phone contact details. Teachers must remove all identifiers before pasting.
+- [`src/lib/review.ts`](src/lib/review.ts) owns recoverable source exclusion, source re-sorting, and the three-path review gate.
 - [`src/lib/evidence.ts`](src/lib/evidence.ts) generates a plain-text note that explicitly avoids grades and student records.
 - [`src/lib/storage.ts`](src/lib/storage.ts) saves only the current local demo draft in browser storage.
 
