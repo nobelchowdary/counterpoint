@@ -4,16 +4,19 @@
 
 Counterpoint turns a class’s short written answers into anonymous, teacher-approved peer discussions. It helps students defend, test, and revise their own reasoning instead of receiving a model answer from a chatbot.
 
-> This repository currently contains the polished, deterministic demo flow for the OpenAI Build Week submission. It uses fictional, de-identified student responses and requires no account or API key to run.
+![Counterpoint flow](https://img.shields.io/badge/flow-teacher%20review%20%E2%86%92%20peer%20discussion%20%E2%86%92%20evidence-252b3b)
 
-## What the demo proves
+> The included classroom is a fictional, de-identified fixture. The complete demo runs without an account, API key, or network request.
 
-1. A teacher launches a formative prompt with 12 fictional student responses.
-2. A teacher reviews an anonymous thinking map with traceable source responses.
-3. A deterministic grouping engine creates mixed-reasoning groups.
-4. A teacher approves a discussion protocol before students see anything.
-5. A student preview captures a revised claim and evidence.
-6. A teacher receives an editable evidence timeline and next instructional move.
+## What works now
+
+1. A teacher can edit a learning goal and discussion question.
+2. A reviewable thinking map keeps every anonymous response linked to a viewpoint.
+3. Teachers can edit viewpoint wording, rebalance mixed-reasoning groups, and lock reviewed groups.
+4. A teacher can edit and approve a four-step evidence discussion protocol.
+5. The student preview supports an independent claim-and-evidence revision.
+6. The evidence view records only actual saved revisions, and can copy or download a teacher-owned text note.
+7. Teacher edits persist locally in the browser. The reset icon in the upper-right restores the fixture.
 
 ## Run locally
 
@@ -22,29 +25,61 @@ npm install
 npm run dev
 ```
 
-Open the local URL shown in your terminal.
+Open the local URL shown in the terminal. The default experience is intentionally usable offline as a high-confidence demo.
 
-## Test and build
+## Check it
 
 ```bash
 npm test
 npm run build
 ```
 
+The tests cover transparent grouping, the analysis response contract, and evidence-note safeguards.
+
+## Optional GPT-5.6 analysis route
+
+The client never receives an API key. When deployed on Vercel, [`api/analyze.ts`](api/analyze.ts) exposes a server-side `POST /api/analyze` route that:
+
+- sends only response IDs, claims, and evidence to the model — no names or student records;
+- requests a structured JSON result from the Responses API using `gpt-5.6-terra` by default;
+- requires all responses to be assigned to a reviewable viewpoint;
+- asks for a teacher move, student prompt, and discussion protocol, while prohibiting grading, diagnosis, identity inference, or a direct answer;
+- validates the result in the browser before it changes the teacher-facing map.
+
+Set these secrets in the deployment provider (never in client code or Git):
+
+```bash
+OPENAI_API_KEY=...
+OPENAI_MODEL=gpt-5.6-terra
+```
+
+Without the server secret, the route returns a clear message and the app automatically falls back to the deterministic fixture. That makes a judgeable demo reliable while keeping a real GPT-5.6 integration path ready for deployment.
+
 ## Architecture
 
-- `src/lib/demo-data.ts` contains the fictional, de-identified classroom fixture.
-- `src/lib/grouping.ts` owns transparent student-group placement. The production model may classify anonymous reasoning, but it does not secretly decide the groups.
-- `tests/grouping.test.ts` checks group size, membership, and viewpoint diversity.
-- `src/main.tsx` contains the runnable teacher and student demo flow.
+```text
+anonymous responses
+        │
+        ├── optional GPT-5.6 reasoning map (server-side, structured)
+        │                                      │
+        └── deterministic grouping rule ───────┘
+                                               │
+teacher reviews / edits / approves ──→ student evidence discussion
+                                               │
+                                  editable formative evidence note
+```
 
-## GPT-5.6 integration plan
+- [`src/lib/grouping.ts`](src/lib/grouping.ts) owns transparent student-group placement; the model never silently controls grouping.
+- [`src/lib/analysis.ts`](src/lib/analysis.ts) validates any model result and owns the reliable offline fallback.
+- [`src/lib/evidence.ts`](src/lib/evidence.ts) generates a plain-text note that explicitly avoids grades and student records.
+- [`src/lib/storage.ts`](src/lib/storage.ts) saves only the current local demo draft in browser storage.
 
-The next implementation slice adds a server-side GPT-5.6 analysis path that returns schema-validated, source-linked viewpoint labels and a teacher-editable discussion protocol. The app will preserve this demo mode so judges can always test it without an API key.
+## Safety and scope
 
-No live student data should be entered into this prototype. Counterpoint is not a grading, compliance, IEP, or student-record system.
+Counterpoint is a formative peer-learning prototype. It is **not** a grading system, compliance workflow, IEP generator, student-record system, or diagnosis tool. Use only de-identified, authorized classroom data in a future pilot, and require teacher review before publishing any model-assisted wording to students.
 
-## Built with Codex and GPT-5.6
+## OpenAI Build Week
 
-This project is being built in a primary Codex task for OpenAI Build Week. Before submitting, this README will be updated with the actual development chronicle, prompt/version details, deployed demo URL, and the `/feedback` Session ID from the core build task.
+This project was built in Codex with GPT-5.6 as a constrained classroom reasoning mapper: structured, source-linked, teacher-editable, and never the final voice to a student.
 
+Before submission, add the deployed demo URL, demo video URL, and the `/feedback` session ID from the primary build task to the Devpost submission.
