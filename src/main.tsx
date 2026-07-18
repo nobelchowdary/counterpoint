@@ -9,9 +9,10 @@ import {
   teacherMove as demoTeacherMove,
   viewpoints as demoViewpoints
 } from "./lib/demo-data";
-import { createDemoAnalysis, requestAnalysis } from "./lib/analysis";
+import { createImportedReviewAnalysis, createOfflineReviewAnalysis, requestAnalysis } from "./lib/analysis";
 import { countReasoningPaths, createEvidenceNote } from "./lib/evidence";
 import { createDiverseGroups } from "./lib/grouping";
+import { parseAnonymousResponses } from "./lib/import";
 import { clearDraft, loadDraft, saveDraft } from "./lib/storage";
 import type {
   AnalysisResult,
@@ -102,7 +103,8 @@ function App() {
   }, [toast]);
 
   const currentIndex = stageMeta.findIndex((item) => item.id === stage);
-  const stageLabel = analysisState === "live" ? "GPT-5.6 map" : "Demo data";
+  const hasImportedResponses = responses.some((response) => response.id.startsWith("imported-"));
+  const stageLabel = analysisState === "live" ? "GPT-5.6 map" : hasImportedResponses ? "Teacher import" : "Demo data";
 
   const advanceTo = (target: Stage) => {
     const index = stageMeta.findIndex((item) => item.id === target);
@@ -110,8 +112,8 @@ function App() {
     setStage(target);
   };
 
-  const applyAnalysis = (analysis: AnalysisResult) => {
-    const remappedResponses = responses.map((response) => ({
+  const applyAnalysis = (analysis: AnalysisResult, sourceResponses = responses, groupRotation = rotation) => {
+    const remappedResponses = sourceResponses.map((response) => ({
       ...response,
       viewpoint: analysis.responseViewpoints[response.id] ?? response.viewpoint
     }));
@@ -121,7 +123,7 @@ function App() {
     setTeacherMove(analysis.teacherMove);
     setStudentPrompt(analysis.studentPrompt);
     setNextMove(analysis.nextMove);
-    setGroups(createDiverseGroups(remappedResponses, rotation));
+    setGroups(createDiverseGroups(remappedResponses, groupRotation));
     setLockedGroupIds([]);
   };
 
@@ -133,7 +135,7 @@ function App() {
       setAnalysisState("live");
       setToast("GPT-5.6 analysis is ready for teacher review. No student-facing text was published.");
     } catch (error) {
-      applyAnalysis(createDemoAnalysis(responses));
+      applyAnalysis(createOfflineReviewAnalysis(responses));
       setAnalysisState("demo");
       const reason = error instanceof Error ? error.message : "The secure analysis route is unavailable.";
       setToast(`${reason} Showing the reviewable fixture map instead.`);
@@ -154,6 +156,19 @@ function App() {
   const updateViewpoint = (id: ViewpointKey, patch: Partial<Omit<Viewpoint, "id" | "color">>) => {
     setViewpoints((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item));
     setToast("Viewpoint wording saved locally. Source responses remain unchanged.");
+  };
+
+  const importAnonymousResponses = (rawText: string) => {
+    const importedResponses = parseAnonymousResponses(rawText);
+    setRotation(0);
+    setRevision(undefined);
+    setApproved(false);
+    setStudentPreview(false);
+    setActiveViewpoint("weight");
+    setAnalysisState("demo");
+    applyAnalysis(createImportedReviewAnalysis(importedResponses), importedResponses, 0);
+    advanceTo("map");
+    setToast(`${importedResponses.length} anonymous responses imported. Review the local draft map, rename it, or run GPT-5.6 before sharing anything.`);
   };
 
   const restart = () => {
@@ -211,7 +226,7 @@ function App() {
         </header>
 
         <section className="content">
-          {stage === "launch" && <Launch lesson={lesson} responseCount={responses.length} onSaveLesson={setLesson} onBegin={() => advanceTo("map")} />}
+          {stage === "launch" && <Launch lesson={lesson} responseCount={responses.length} hasImportedResponses={hasImportedResponses} onSaveLesson={setLesson} onImportResponses={importAnonymousResponses} onBegin={() => advanceTo("map")} />}
           {stage === "map" && <ThinkingMap
             activeViewpoint={activeViewpoint}
             onSelect={setActiveViewpoint}
@@ -219,6 +234,7 @@ function App() {
             viewpoints={viewpoints}
             responses={responses}
             analysisState={analysisState}
+            hasImportedResponses={hasImportedResponses}
             onRunAnalysis={runAnalysis}
             onSaveViewpoint={updateViewpoint}
             onContinue={() => advanceTo("groups")}
@@ -265,18 +281,31 @@ function App() {
   );
 }
 
-function Launch({ lesson, responseCount, onSaveLesson, onBegin }: {
+function Launch({ lesson, responseCount, hasImportedResponses, onSaveLesson, onImportResponses, onBegin }: {
   lesson: Lesson;
   responseCount: number;
+  hasImportedResponses: boolean;
   onSaveLesson: (lesson: Lesson) => void;
+  onImportResponses: (rawText: string) => void;
   onBegin: () => void;
 }) {
   const [editing, setEditing] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [draft, setDraft] = useState(lesson);
+  const [rawResponses, setRawResponses] = useState("");
+  const [privacyConfirmed, setPrivacyConfirmed] = useState(false);
+  const [importError, setImportError] = useState("");
 
   const openEditor = () => {
     setDraft(lesson);
+    setImporting(false);
     setEditing(true);
+  };
+
+  const openImporter = () => {
+    setEditing(false);
+    setImportError("");
+    setImporting(true);
   };
 
   const save = () => {
@@ -285,13 +314,34 @@ function Launch({ lesson, responseCount, onSaveLesson, onBegin }: {
     setEditing(false);
   };
 
+  const importResponses = () => {
+    if (!privacyConfirmed) {
+      setImportError("Confirm that you removed names and identifying details before importing.");
+      return;
+    }
+    try {
+      onImportResponses(rawResponses);
+      setImporting(false);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "Counterpoint could not import those responses.");
+    }
+  };
+
   return <div className="launch-wrap fade-in">
     <div className="eyebrow">A ten-minute formative conversation</div>
     <h1>Make the thinking<br />in the room useful<br />to the room.</h1>
     <p className="lede">Counterpoint turns a class’s written reasoning into an anonymous, teacher-approved peer conversation — not another answer from a bot.</p>
     <div className="lesson-card">
-      <div className="lesson-head"><span>Today’s learning goal</span><button className="inline-action" onClick={openEditor}>Edit goal {icon.edit}</button></div>
-      {editing ? <div className="lesson-editor">
+      <div className="lesson-head"><span>Today’s learning goal</span><span className="lesson-actions"><button className="inline-action" onClick={openImporter}>Paste responses</button><button className="inline-action" onClick={openEditor}>Edit goal {icon.edit}</button></span></div>
+      {importing ? <div className="lesson-editor import-editor">
+        <div className="import-guidance"><strong>Paste anonymous responses</strong><p>One response per line: <code>claim | evidence</code>. Do not include names, emails, IDs, or contact details.</p><pre>They land together | Both objects are pulled down at the same time.
+Air could matter | A wider shape may be slowed more by air.
+The heavier one lands first | It seems to have more downward force.</pre></div>
+        <label htmlFor="anonymous-responses">Anonymous responses<textarea id="anonymous-responses" value={rawResponses} onChange={(event) => setRawResponses(event.target.value)} placeholder="Claim | Evidence" /></label>
+        <label className="privacy-check"><input type="checkbox" checked={privacyConfirmed} onChange={(event) => setPrivacyConfirmed(event.target.checked)} /> I confirm I removed names and identifying information.</label>
+        {importError && <p className="form-error">{importError}</p>}
+        <div className="form-actions"><button className="outline" onClick={() => setImporting(false)}>Cancel</button><button className="primary" onClick={importResponses}>Import for review <span>{icon.arrow}</span></button></div>
+      </div> : editing ? <div className="lesson-editor">
         <label>Lesson title<input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
         <label>Learning goal<textarea value={draft.learningGoal} onChange={(event) => setDraft({ ...draft, learningGoal: event.target.value })} /></label>
         <label>Discussion question<textarea value={draft.question} onChange={(event) => setDraft({ ...draft, question: event.target.value })} /></label>
@@ -300,20 +350,21 @@ function Launch({ lesson, responseCount, onSaveLesson, onBegin }: {
         <p>{lesson.learningGoal}</p>
         <div className="prompt-box"><span>Question</span><strong>{lesson.question}</strong></div>
       </>}
-      <div className="response-row"><div className="response-stack">{Array.from({ length: Math.min(responseCount, 5) }).map((_, index) => <span key={index} style={{ transform: `rotate(${(index - 2) * 3}deg) translateX(${index * 5}px)` }} />)}</div><div><strong>{responseCount} responses ready</strong><small>Fictional, de-identified classroom reasoning</small></div></div>
+      <div className="response-row"><div className="response-stack">{Array.from({ length: Math.min(responseCount, 5) }).map((_, index) => <span key={index} style={{ transform: `rotate(${(index - 2) * 3}deg) translateX(${index * 5}px)` }} />)}</div><div><strong>{responseCount} responses ready</strong><small>{hasImportedResponses ? "Teacher-imported, locally stored reasoning" : "Fictional, de-identified classroom reasoning"}</small></div></div>
     </div>
     <div className="trust-row"><span><b>{icon.shield}</b> Teacher review before sharing</span><span><b>{icon.check}</b> No grades or learner labels</span><span><b>{icon.spark}</b> Evidence stays editable</span></div>
     <div className="launch-actions"><button className="primary" onClick={onBegin}>Reveal the thinking <span>{icon.arrow}</span></button><p><span>{icon.shield}</span> Nothing reaches students without your review.</p></div>
   </div>;
 }
 
-function ThinkingMap({ activeViewpoint, onSelect, lesson, viewpoints, responses, analysisState, onRunAnalysis, onSaveViewpoint, onContinue }: {
+function ThinkingMap({ activeViewpoint, onSelect, lesson, viewpoints, responses, analysisState, hasImportedResponses, onRunAnalysis, onSaveViewpoint, onContinue }: {
   activeViewpoint: ViewpointKey;
   onSelect: (id: ViewpointKey) => void;
   lesson: Lesson;
   viewpoints: Viewpoint[];
   responses: StudentResponse[];
   analysisState: AnalysisState;
+  hasImportedResponses: boolean;
   onRunAnalysis: () => void;
   onSaveViewpoint: (id: ViewpointKey, patch: Partial<Omit<Viewpoint, "id" | "color">>) => void;
   onContinue: () => void;
@@ -341,8 +392,8 @@ function ThinkingMap({ activeViewpoint, onSelect, lesson, viewpoints, responses,
 
   const analysisLabel = analysisState === "loading" ? "Mapping reasoning…" : analysisState === "live" ? "Refresh GPT-5.6 map" : "Run secure GPT-5.6 analysis";
   return <div className="fade-in">
-    <PageIntro eyebrow="Step 02 / Teacher review" title="Three ways your class is thinking." text={analysisState === "live" ? "GPT-5.6 grouped the anonymous reasoning into reviewable viewpoints. You control every label, note, and next step before anything is shared." : "Review the fictional reasoning map below, or connect the optional secure GPT-5.6 analysis route. Every interpretation stays traceable to its source response."} />
-    <div className="analysis-toolbar"><div><span className="tiny-label">Reasoning map</span><strong>{analysisState === "live" ? "GPT-5.6 structured result — awaiting teacher review" : "Deterministic fixture — always available for a demo"}</strong></div><button className="outline" onClick={onRunAnalysis} disabled={analysisState === "loading"}>{analysisLabel}</button></div>
+    <PageIntro eyebrow="Step 02 / Teacher review" title="Three ways your class is thinking." text={analysisState === "live" ? "GPT-5.6 grouped the anonymous reasoning into reviewable viewpoints. You control every label, note, and next step before anything is shared." : hasImportedResponses ? "Counterpoint created a transparent local draft map from the anonymous teacher import. Rename every viewpoint, or run GPT-5.6, before sharing anything with students." : "Review the fictional reasoning map below, or connect the optional secure GPT-5.6 analysis route. Every interpretation stays traceable to its source response."} />
+    <div className="analysis-toolbar"><div><span className="tiny-label">Reasoning map</span><strong>{analysisState === "live" ? "GPT-5.6 structured result — awaiting teacher review" : hasImportedResponses ? "Local draft categories — teacher review required" : "Deterministic fixture — always available for a demo"}</strong></div><button className="outline" onClick={onRunAnalysis} disabled={analysisState === "loading"}>{analysisLabel}</button></div>
     <div className="map-layout">
       <div className="viewpoint-grid">
         {viewpoints.map((viewpoint, index) => {

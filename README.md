@@ -10,7 +10,7 @@ Counterpoint turns a class’s short written answers into anonymous, teacher-app
 
 ## What works now
 
-1. A teacher can edit a learning goal and discussion question.
+1. A teacher can edit a learning goal and discussion question, or paste 3–30 anonymous `claim | evidence` responses for a new local session.
 2. A reviewable thinking map keeps every anonymous response linked to a viewpoint.
 3. Teachers can edit viewpoint wording, rebalance mixed-reasoning groups, and lock reviewed groups.
 4. A teacher can edit and approve a four-step evidence discussion protocol.
@@ -71,6 +71,7 @@ teacher reviews / edits / approves ──→ student evidence discussion
 
 - [`src/lib/grouping.ts`](src/lib/grouping.ts) owns transparent student-group placement; the model never silently controls grouping.
 - [`src/lib/analysis.ts`](src/lib/analysis.ts) validates any model result and owns the reliable offline fallback.
+- [`src/lib/import.ts`](src/lib/import.ts) accepts a small, teacher-confirmed import format, assigns neutral aliases in the UI, and blocks obvious email/phone contact details. Teachers must remove all identifiers before pasting.
 - [`src/lib/evidence.ts`](src/lib/evidence.ts) generates a plain-text note that explicitly avoids grades and student records.
 - [`src/lib/storage.ts`](src/lib/storage.ts) saves only the current local demo draft in browser storage.
 
