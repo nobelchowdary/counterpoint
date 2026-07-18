@@ -49,6 +49,34 @@ export function createDemoAnalysis(studentResponses: StudentResponse[]): Analysi
   };
 }
 
+/** A transparent local starting point for teacher-imported responses before GPT-5.6 is connected. */
+export function createImportedReviewAnalysis(studentResponses: StudentResponse[]): AnalysisResult {
+  return {
+    model: "Local draft map",
+    viewpoints: [
+      { id: "weight", title: "Force-focused reasoning", badge: "Draft pattern", color: "rose", summary: "Responses that foreground force, weight, or a main cause. Rename this wording after reviewing the source ideas.", teacherNote: "Ask which evidence or observation would test this explanation." },
+      { id: "gravity", title: "Relationship-focused reasoning", badge: "Draft pattern", color: "blue", summary: "Responses that compare two ideas, objects, or relationships. Rename this wording after reviewing the source ideas.", teacherNote: "Invite learners to name what stays the same and what changes." },
+      { id: "air", title: "Condition-focused reasoning", badge: "Draft pattern", color: "gold", summary: "Responses that notice conditions, context, or missing information. Rename this wording after reviewing the source ideas.", teacherNote: "Ask which condition would make the strongest test or counterexample." }
+    ],
+    responseViewpoints: Object.fromEntries(studentResponses.map((response) => [response.id, response.viewpoint])),
+    protocol: [
+      { id: "notice", title: "Notice your reasoning", description: "Re-read your own claim and underline the evidence or example you used.", duration: "1 min" },
+      { id: "listen", title: "Understand before challenge", description: "Each person shares an explanation. Ask one question to understand it accurately.", duration: "4 min" },
+      { id: "test", title: "Test an explanation", description: "Compare the evidence. Name one observation, example, or condition that could test the ideas.", duration: "3 min" },
+      { id: "revise", title: "Revise independently", description: "Keep or revise your claim. Name the evidence that mattered most.", duration: "2 min" }
+    ],
+    teacherMove: "Listen for claims that need evidence and for conditions learners think could change the result. Do not announce a verdict before groups name their reasoning.",
+    studentPrompt: "What evidence, example, or condition would help your group test these explanations?",
+    nextMove: "Choose one shared example or small investigation that lets learners test a claim against evidence."
+  };
+}
+
+export function createOfflineReviewAnalysis(studentResponses: StudentResponse[]): AnalysisResult {
+  return studentResponses.every((response) => /^s\d+$/.test(response.id))
+    ? createDemoAnalysis(studentResponses)
+    : createImportedReviewAnalysis(studentResponses);
+}
+
 /** Validates an untrusted server result before it changes a teacher-facing map. */
 export function normalizeAnalysisResult(value: unknown, studentResponses: StudentResponse[]): AnalysisResult {
   if (!value || typeof value !== "object") throw new Error("Analysis returned an invalid result.");

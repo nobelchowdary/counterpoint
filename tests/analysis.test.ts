@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createDemoAnalysis, normalizeAnalysisResult } from "../src/lib/analysis";
+import { createDemoAnalysis, createImportedReviewAnalysis, normalizeAnalysisResult } from "../src/lib/analysis";
 import { responses } from "../src/lib/demo-data";
 
 describe("classroom reasoning analysis contract", () => {
@@ -19,5 +19,12 @@ describe("classroom reasoning analysis contract", () => {
     };
 
     expect(() => normalizeAnalysisResult(incomplete, responses)).toThrow("incomplete response map");
+  });
+
+  it("labels an imported class as a teacher-reviewable draft instead of a model verdict", () => {
+    const analysis = createImportedReviewAnalysis([{ ...responses[0], id: "imported-1" }, { ...responses[1], id: "imported-2" }, { ...responses[2], id: "imported-3" }]);
+
+    expect(analysis.model).toBe("Local draft map");
+    expect(analysis.viewpoints.every((viewpoint) => viewpoint.badge === "Draft pattern")).toBe(true);
   });
 });
