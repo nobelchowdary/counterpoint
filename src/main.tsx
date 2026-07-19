@@ -322,7 +322,13 @@ function App() {
               setMapApproved(true);
               setToast("Thinking map approved. Next, review the balanced discussion groups.");
             }}
-            onContinue={() => advanceTo("groups")}
+            onContinue={() => {
+              if (!mapApproved) {
+                setToast("Open each pathway, mark it reviewed in the Teacher lens, then approve the map before building student groups.");
+                return;
+              }
+              advanceTo("groups");
+            }}
           />}
           {stage === "groups" && <Groups
             groups={groups}
@@ -524,7 +530,7 @@ function ThinkingMap({ activeViewpoint, onSelect, lesson, viewpoints, responses,
       </aside>
     </div>
     <div className="source-footnote"><span>{icon.shield}</span> {lesson.title}: summaries are editable interpretations; every pattern stays linked to anonymous source reasoning, including any source the teacher excludes from the class plan.</div>
-    <div className="page-actions review-actions"><p><span>{icon.check}</span> {reviewComplete ? "All pathways are reviewed. Approve the map when it is ready for students." : "Mark each of the three pathways reviewed before classroom approval."}</p><div><button className="outline" onClick={onApproveMap} disabled={mapApproved || !reviewComplete}>{mapApproved ? `${icon.check} Map approved` : "Approve map for class"}</button><button className="primary" onClick={onContinue} disabled={!mapApproved}>Build discussion groups <span>{icon.arrow}</span></button></div></div>
+    <div className="page-actions review-actions"><p><span>{icon.check}</span> {reviewComplete ? "All pathways are reviewed. Approve the map when it is ready for students." : "Open each pathway and choose ‘Mark pathway reviewed’ in the Teacher lens to unlock classroom approval."}</p><div><button className="outline" onClick={onApproveMap} disabled={mapApproved}>{mapApproved ? `${icon.check} Map approved` : "Approve map for class"}</button><button className="primary" onClick={onContinue}>Build discussion groups <span>{icon.arrow}</span></button></div></div>
   </div>;
 }
 
