@@ -12,13 +12,15 @@ import {
 import { createImportedReviewAnalysis, createOfflineReviewAnalysis, requestAnalysis } from "./lib/analysis";
 import { countReasoningPaths, createEvidenceNote, formatReasoningShift } from "./lib/evidence";
 import { createDiverseGroups } from "./lib/grouping";
-import { parseAnonymousResponses } from "./lib/import";
+import { screenAnonymousResponses } from "./lib/import";
 import { excludeResponseForReview, hasCompletedMapReview, moveResponseToPath } from "./lib/review";
 import { clearDraft, loadDraft, saveDraft } from "./lib/storage";
 import type {
   AnalysisResult,
   CounterpointDraft,
+  DraftWorkflow,
   DiscussionGroup,
+  IntakeIssue,
   Lesson,
   ProtocolStep,
   Revision,
@@ -26,6 +28,7 @@ import type {
   Viewpoint,
   ViewpointKey
 } from "./lib/types";
+import { createImpactSummary, demoExitTickets } from "./lib/impact";
 import "./styles.css";
 
 type Stage = "launch" | "map" | "groups" | "protocol" | "evidence";
@@ -55,6 +58,19 @@ const importSample = [
   "The heavier one lands first | It seems to have more downward force."
 ].join("\n");
 
+const stagedDemoExitTickets: Revision[] = demoExitTickets.map((ticket, index) => ({
+  ...ticket,
+  groupId: `group-${(index % 4) + 1}`,
+  claim: index < 8
+    ? "They land together when air is removed, because the heavier sphere also has more mass."
+    : "I am still testing how shape and air resistance change the result.",
+  evidence: ticket.namedNewEvidence
+    ? "Our group compared the same drop with and without air and named a testable condition."
+    : "I want one more observation before deciding.",
+  counterpoint: "What would a vacuum drop show?",
+  savedAt: `2026-07-18T12:${String(index).padStart(2, "0")}:00.000Z`
+}));
+
 function createInitialDraft(): CounterpointDraft {
   return {
     lesson: { ...demoLesson },
@@ -64,17 +80,20 @@ function createInitialDraft(): CounterpointDraft {
     teacherMove: demoTeacherMove,
     studentPrompt: demoStudentPrompt,
     nextMove: demoNextMove,
+    exitTickets: [],
     updatedAt: new Date().toISOString()
   };
 }
 
 function App() {
   const [initialDraft] = useState<CounterpointDraft>(() => loadDraft() ?? createInitialDraft());
-  const [stage, setStage] = useState<Stage>("launch");
-  const [furthestStage, setFurthestStage] = useState(0);
+  const initialWorkflow = initialDraft.workflow;
+  const [stage, setStage] = useState<Stage>(initialWorkflow?.stage ?? "launch");
+  const [furthestStage, setFurthestStage] = useState(initialWorkflow?.furthestStage ?? 0);
   const [lesson, setLesson] = useState<Lesson>(initialDraft.lesson);
   const [responses, setResponses] = useState<StudentResponse[]>(initialDraft.responses);
   const [excludedResponses, setExcludedResponses] = useState<StudentResponse[]>(initialDraft.excludedResponses ?? []);
+  const [needsReviewItems, setNeedsReviewItems] = useState<IntakeIssue[]>(initialDraft.needsReviewItems ?? []);
   const [viewpoints, setViewpoints] = useState<Viewpoint[]>(initialDraft.viewpoints);
   const [reviewedViewpointIds, setReviewedViewpointIds] = useState<ViewpointKey[]>(initialDraft.reviewedViewpointIds ?? []);
   const [mapApproved, setMapApproved] = useState(initialDraft.mapApproved ?? false);
@@ -83,20 +102,33 @@ function App() {
   const [studentPrompt, setStudentPrompt] = useState(initialDraft.studentPrompt);
   const [nextMove, setNextMove] = useState(initialDraft.nextMove);
   const [revision, setRevision] = useState<Revision | undefined>(initialDraft.revision);
-  const [activeViewpoint, setActiveViewpoint] = useState<ViewpointKey>("weight");
-  const [rotation, setRotation] = useState(0);
-  const [groups, setGroups] = useState<DiscussionGroup[]>(() => createDiverseGroups(initialDraft.responses));
-  const [lockedGroupIds, setLockedGroupIds] = useState<string[]>([]);
-  const [approved, setApproved] = useState(false);
+  const [activeViewpoint, setActiveViewpoint] = useState<ViewpointKey>(initialWorkflow?.activeViewpoint ?? "weight");
+  const [rotation, setRotation] = useState(initialWorkflow?.rotation ?? 0);
+  const [groups, setGroups] = useState<DiscussionGroup[]>(() => createDiverseGroups(initialDraft.responses, initialWorkflow?.rotation ?? 0));
+  const [lockedGroupIds, setLockedGroupIds] = useState<string[]>(initialWorkflow?.lockedGroupIds ?? []);
+  const [approved, setApproved] = useState(initialWorkflow?.groupsApproved ?? false);
   const [studentPreview, setStudentPreview] = useState(false);
-  const [analysisState, setAnalysisState] = useState<AnalysisState>("idle");
+  const [analysisState, setAnalysisState] = useState<AnalysisState>(initialWorkflow?.analysisState ?? "idle");
+  const [analysisFallbackReason, setAnalysisFallbackReason] = useState<string | null>(null);
+  const [exitTickets, setExitTickets] = useState<Revision[]>(initialDraft.exitTickets ?? (initialDraft.revision ? [initialDraft.revision] : []));
   const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
+    const workflow: DraftWorkflow = {
+      stage,
+      furthestStage,
+      rotation,
+      lockedGroupIds,
+      groupsApproved: approved,
+      activeViewpoint,
+      analysisState: analysisState === "loading" ? "demo" : analysisState
+    };
     saveDraft({
+      version: 2,
       lesson,
       responses,
       excludedResponses,
+      needsReviewItems,
       viewpoints,
       reviewedViewpointIds,
       mapApproved,
@@ -105,9 +137,11 @@ function App() {
       studentPrompt,
       nextMove,
       revision,
+      exitTickets,
+      workflow,
       updatedAt: new Date().toISOString()
     });
-  }, [lesson, responses, excludedResponses, viewpoints, reviewedViewpointIds, mapApproved, protocol, teacherMove, studentPrompt, nextMove, revision]);
+  }, [lesson, responses, excludedResponses, needsReviewItems, viewpoints, reviewedViewpointIds, mapApproved, protocol, teacherMove, studentPrompt, nextMove, revision, exitTickets, stage, furthestStage, rotation, lockedGroupIds, approved, activeViewpoint, analysisState]);
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -144,6 +178,7 @@ function App() {
 
   const runAnalysis = async () => {
     setAnalysisState("loading");
+    setAnalysisFallbackReason(null);
     try {
       const analysis = await requestAnalysis({ lesson, responses });
       applyAnalysis(analysis);
@@ -153,7 +188,8 @@ function App() {
       applyAnalysis(createOfflineReviewAnalysis(responses));
       setAnalysisState("demo");
       const reason = error instanceof Error ? error.message : "The secure analysis route is unavailable.";
-      setToast(`${reason} Showing the reviewable fixture map instead.`);
+      setAnalysisFallbackReason(reason);
+      setToast(`${reason} The deterministic local map is still available for teacher review.`);
     }
   };
 
@@ -222,9 +258,19 @@ function App() {
   };
 
   const importAnonymousResponses = (rawText: string) => {
-    const importedResponses = parseAnonymousResponses(rawText);
+    const screening = screenAnonymousResponses(rawText);
+    if (!screening.canImport) {
+      throw new Error(`Counterpoint found ${screening.acceptedResponses.length} usable response${screening.acceptedResponses.length === 1 ? "" : "s"}. Keep at least three after the deterministic intake check.`);
+    }
+    const importedResponses = screening.acceptedResponses;
     setRotation(0);
     setExcludedResponses([]);
+    setNeedsReviewItems(screening.needsReview.map((item, index) => ({
+      id: `intake-${item.sourceLine}-${item.reason}-${index}`,
+      line: item.sourceLine,
+      status: item.reason === "contact-information" ? "blocked" : "needs-review",
+      reason: item.message
+    })));
     setReviewedViewpointIds([]);
     setMapApproved(false);
     setRevision(undefined);
@@ -232,9 +278,11 @@ function App() {
     setStudentPreview(false);
     setActiveViewpoint("weight");
     setAnalysisState("demo");
+    setAnalysisFallbackReason(null);
     applyAnalysis(createImportedReviewAnalysis(importedResponses), importedResponses, 0);
     advanceTo("map");
-    setToast(`${importedResponses.length} anonymous responses imported. Review the local draft map, rename it, or run GPT-5.6 before sharing anything.`);
+    const held = screening.needsReview.length;
+    setToast(`${importedResponses.length} anonymous responses entered the teacher draft${held ? `; ${held} row${held === 1 ? "" : "s"} stayed out for review` : ""}.`);
   };
 
   const restart = () => {
@@ -243,8 +291,9 @@ function App() {
     setApproved(false);
     setStudentPreview(false);
     setRevision(undefined);
+    setExitTickets([]);
     setRotation(0);
-    setGroups(createDiverseGroups(responses));
+    setGroups(createDiverseGroups(responses, rotation));
     setLockedGroupIds([]);
     setToast("The discussion flow restarted. Your teacher edits remain saved locally.");
   };
@@ -252,6 +301,11 @@ function App() {
   const resetSavedDemo = () => {
     clearDraft();
     window.location.reload();
+  };
+
+  const refreshToProvePersistence = () => {
+    setToast("Saved in this browser. Reloading the same teacher-reviewed state…");
+    window.setTimeout(() => window.location.reload(), 700);
   };
 
   const groupForPreview = useMemo(() => groups[2] ?? groups[0], [groups]);
@@ -286,6 +340,7 @@ function App() {
         <header className="topbar">
           <div className="crumb"><span className="dot" />Demo classroom <span>/</span> {lesson.title}</div>
           <div className="topbar-right">
+            <button className="save-status" onClick={refreshToProvePersistence} title="Reload to verify that teacher edits persist in this browser"><span>{icon.check}</span> Saved locally <small>refresh-safe</small></button>
             <span className={`demo-pill ${analysisState === "live" ? "live-pill" : ""}`}>{stageLabel}</span>
             <button className="help" aria-label="Reset saved demo" title="Reset saved demo" onClick={resetSavedDemo}>↺</button>
           </div>
@@ -300,7 +355,9 @@ function App() {
             viewpoints={viewpoints}
             responses={responses}
             analysisState={analysisState}
+            analysisFallbackReason={analysisFallbackReason}
             hasImportedResponses={hasImportedResponses}
+            needsReviewItems={needsReviewItems}
             excludedResponses={excludedResponses}
             reviewedViewpointIds={reviewedViewpointIds}
             mapApproved={mapApproved}
@@ -329,6 +386,7 @@ function App() {
               }
               advanceTo("groups");
             }}
+            onRefreshToProvePersistence={refreshToProvePersistence}
           />}
           {stage === "groups" && <Groups
             groups={groups}
@@ -356,12 +414,22 @@ function App() {
             setStudentPreview={setStudentPreview}
             group={groupForPreview}
             viewpoints={viewpoints}
-            onComplete={(nextRevision) => { setRevision(nextRevision); advanceTo("evidence"); }}
+            onComplete={(nextRevision) => {
+              setRevision(nextRevision);
+              setExitTickets((tickets) => [...tickets, nextRevision]);
+              advanceTo("evidence");
+            }}
           />}
           {stage === "evidence" && <Evidence
             lesson={lesson}
             responses={responses}
             revision={revision}
+            exitTickets={exitTickets}
+            onLoadDemoCohort={() => {
+              setExitTickets(stagedDemoExitTickets);
+              setRevision(stagedDemoExitTickets[stagedDemoExitTickets.length - 1]);
+              setToast("Loaded a clearly labeled fictional class check-in for the demo. It is not real student data.");
+            }}
             nextMove={nextMove}
             onNotify={setToast}
             onRestart={restart}
@@ -428,7 +496,7 @@ function Launch({ lesson, responseCount, hasImportedResponses, onSaveLesson, onI
     <div className="lesson-card">
       <div className="lesson-head"><span>Today’s learning goal</span><span className="lesson-actions"><button className="inline-action" onClick={openImporter}>Paste responses</button><button className="inline-action" onClick={openEditor}>Edit goal {icon.edit}</button></span></div>
       {importing ? <div className="lesson-editor import-editor">
-        <div className="import-guidance"><div className="import-guidance-head"><div><span className="tiny-label">Private teacher workspace</span><strong>Paste anonymous responses</strong></div><button className="text-action" onClick={() => setRawResponses(importSample)}>Use a 3-response sample</button></div><p>One response per line: <code>claim | evidence</code>. Do not include names, emails, IDs, or contact details.</p><pre>{importSample}</pre></div>
+        <div className="import-guidance"><div className="import-guidance-head"><div><span className="tiny-label">Private teacher workspace</span><strong>Paste anonymous responses</strong></div><button className="text-action" onClick={() => setRawResponses(importSample)}>Use a 3-response sample</button></div><p>One response per line: <code>claim | evidence</code>. Counterpoint deterministically holds malformed, placeholder, or contact-detail rows out of analysis for teacher repair.</p><pre>{importSample}</pre></div>
         <label htmlFor="anonymous-responses">Anonymous responses<textarea id="anonymous-responses" value={rawResponses} onChange={(event) => setRawResponses(event.target.value)} placeholder="Claim | Evidence" /></label>
         {!rawResponses && <div className="import-empty"><span>{icon.spark}</span><div><strong>Start with three short responses</strong><p>Use the sample to explore the full teacher-review workflow before adding a de-identified classroom set.</p></div></div>}
         <label className="privacy-check"><input type="checkbox" checked={privacyConfirmed} onChange={(event) => setPrivacyConfirmed(event.target.checked)} /> I confirm I removed names and identifying information.</label>
@@ -451,14 +519,16 @@ function Launch({ lesson, responseCount, hasImportedResponses, onSaveLesson, onI
   </div>;
 }
 
-function ThinkingMap({ activeViewpoint, onSelect, lesson, viewpoints, responses, analysisState, hasImportedResponses, excludedResponses, reviewedViewpointIds, mapApproved, onRunAnalysis, onSaveViewpoint, onMoveResponse, onExcludeResponse, onRestoreResponse, onMergeViewpoint, onToggleReviewed, onApproveMap, onContinue }: {
+function ThinkingMap({ activeViewpoint, onSelect, lesson, viewpoints, responses, analysisState, analysisFallbackReason, hasImportedResponses, needsReviewItems, excludedResponses, reviewedViewpointIds, mapApproved, onRunAnalysis, onSaveViewpoint, onMoveResponse, onExcludeResponse, onRestoreResponse, onMergeViewpoint, onToggleReviewed, onApproveMap, onContinue, onRefreshToProvePersistence }: {
   activeViewpoint: ViewpointKey;
   onSelect: (id: ViewpointKey) => void;
   lesson: Lesson;
   viewpoints: Viewpoint[];
   responses: StudentResponse[];
   analysisState: AnalysisState;
+  analysisFallbackReason: string | null;
   hasImportedResponses: boolean;
+  needsReviewItems: IntakeIssue[];
   excludedResponses: StudentResponse[];
   reviewedViewpointIds: ViewpointKey[];
   mapApproved: boolean;
@@ -471,6 +541,7 @@ function ThinkingMap({ activeViewpoint, onSelect, lesson, viewpoints, responses,
   onToggleReviewed: (id: ViewpointKey) => void;
   onApproveMap: () => void;
   onContinue: () => void;
+  onRefreshToProvePersistence: () => void;
 }) {
   const active = viewpoints.find((viewpoint) => viewpoint.id === activeViewpoint) ?? viewpoints[0];
   const selectedResponses = responses.filter((response) => response.viewpoint === active.id);
@@ -479,6 +550,8 @@ function ThinkingMap({ activeViewpoint, onSelect, lesson, viewpoints, responses,
   const [mergeTarget, setMergeTarget] = useState<ViewpointKey>(viewpoints.find((viewpoint) => viewpoint.id !== active.id)?.id ?? active.id);
   const reviewComplete = hasCompletedMapReview(reviewedViewpointIds);
   const activeReviewed = reviewedViewpointIds.includes(active.id);
+  const heldForReview = needsReviewItems.filter((item) => item.status === "needs-review");
+  const blockedAtIntake = needsReviewItems.filter((item) => item.status === "blocked");
 
   useEffect(() => {
     setEditing(false);
@@ -501,6 +574,14 @@ function ThinkingMap({ activeViewpoint, onSelect, lesson, viewpoints, responses,
   return <div className="fade-in">
     <PageIntro eyebrow="Step 02 / Teacher review" title="Three ways your class is thinking." text={analysisState === "live" ? "GPT-5.6 grouped the anonymous reasoning into reviewable viewpoints. You control every label, note, and next step before anything is shared." : hasImportedResponses ? "Counterpoint created a transparent local draft map from the anonymous teacher import. Rename every viewpoint, or run GPT-5.6, before sharing anything with students." : "Review the fictional reasoning map below, or connect the optional secure GPT-5.6 analysis route. Every interpretation stays traceable to its source response."} />
     <div className="analysis-toolbar"><div><span className="tiny-label">Reasoning map</span><strong>{analysisState === "live" ? "GPT-5.6 structured result — awaiting teacher review" : hasImportedResponses ? "Local draft categories — teacher review required" : "Deterministic fixture — always available for a demo"}</strong></div><div className="review-toolbar-actions"><span className={`review-progress ${mapApproved ? "done" : ""}`}>{mapApproved ? `${icon.check} approved for class` : `${reviewedViewpointIds.length}/3 pathways reviewed`}</span><button className="outline" onClick={onRunAnalysis} disabled={analysisState === "loading"}>{analysisLabel}</button></div></div>
+    <section className={`reliability-strip ${analysisFallbackReason ? "fallback" : ""}`} aria-label="Reliability safeguards">
+      <div><span>{icon.check}</span><strong>Deterministic intake</strong><small>{responses.length} usable sources enter the map</small></div>
+      <div><span>{icon.check}</span><strong>Schema gate</strong><small>Every AI result must link every source</small></div>
+      <div><span>{analysisFallbackReason ? icon.shield : icon.check}</span><strong>{analysisFallbackReason ? "Safe fallback active" : "Fallback ready"}</strong><small>{analysisFallbackReason ? "A local draft remains teacher-reviewable" : "A local draft is available if analysis fails"}</small></div>
+      {needsReviewItems.length > 0 && <div className="reliability-held"><span>{icon.shield}</span><strong>{needsReviewItems.length} held out</strong><small>Needs teacher repair before analysis</small></div>}
+    </section>
+    <div className="persistence-proof"><div><span>{icon.check}</span><strong>Teacher edits save deterministically in this browser.</strong><small>Rename a pattern or move a source, then refresh — the reviewed baseline and downstream groups rebuild from the saved state.</small></div><button className="text-action" onClick={onRefreshToProvePersistence}>Refresh to verify ↻</button></div>
+    {analysisFallbackReason && <div className="fallback-banner"><span>{icon.shield}</span><div><strong>Nothing unvalidated reached students.</strong><small>{analysisFallbackReason} Counterpoint switched to a deterministic teacher-review draft.</small></div></div>}
     <div className="map-layout">
       <div className="viewpoint-grid">
         {viewpoints.map((viewpoint, index) => {
@@ -525,6 +606,7 @@ function ThinkingMap({ activeViewpoint, onSelect, lesson, viewpoints, responses,
           <div className="source-list"><span>Evidence ledger · {selectedResponses.length} linked sources</span>{selectedResponses.length > 0 ? selectedResponses.map((response) => <article key={response.id}><div className="source-avatar">{response.alias.slice(0, 1)}</div><div className="source-copy"><strong>{response.claim}</strong><small>“{response.evidence}”</small><div className="source-actions"><label>Path<select aria-label={`Move ${response.alias} to another pathway`} value={response.viewpoint} onChange={(event) => onMoveResponse(response.id, event.target.value as ViewpointKey)}>{viewpoints.map((viewpoint) => <option value={viewpoint.id} key={viewpoint.id}>{viewpoint.badge}</option>)}</select></label><button className="text-action" onClick={() => onExcludeResponse(response.id)}>Exclude</button></div></div></article>) : <div className="empty-path"><strong>Open pathway</strong><p>Rename this card, then move a distinct source here to split a counterpoint from another path.</p></div>}</div>
           {selectedResponses.length > 0 && <div className="merge-control"><label>Merge this pathway into<select aria-label={`Merge ${active.title} into another pathway`} value={mergeTarget} onChange={(event) => setMergeTarget(event.target.value as ViewpointKey)}>{viewpoints.filter((viewpoint) => viewpoint.id !== active.id).map((viewpoint) => <option value={viewpoint.id} key={viewpoint.id}>{viewpoint.title}</option>)}</select></label><button className="text-action" onClick={() => onMergeViewpoint(active.id, mergeTarget)}>Merge sources</button></div>}
           {excludedResponses.length > 0 && <div className="excluded-ledger"><span>Excluded from class plan · recoverable</span>{excludedResponses.map((response) => <article key={response.id}><div><strong>{response.alias}</strong><small>{response.claim}</small></div><button className="text-action" onClick={() => onRestoreResponse(response.id, active.id)}>Restore here</button></article>)}</div>}
+          {needsReviewItems.length > 0 && <div className="intake-ledger"><span>Deterministic intake ledger · not analyzed</span>{heldForReview.map((item) => <article key={item.id}><div><strong>Line {item.line} · needs review</strong><small>{item.reason}</small></div></article>)}{blockedAtIntake.map((item) => <article key={item.id}><div><strong>Line {item.line} · blocked for privacy</strong><small>{item.reason}</small></div></article>)}</div>}
           <button className="quiet-button" onClick={() => setEditing(true)}>Edit viewpoint wording {icon.edit}</button>
         </>}
       </aside>
@@ -613,9 +695,41 @@ function Protocol({ approved, protocol, teacherMove, studentPrompt, nextMove, on
       <div className="form-actions"><button className="outline" onClick={() => setEditing(false)}>Cancel</button><button className="primary" onClick={save}>Save discussion plan <span>{icon.check}</span></button></div>
     </section> : <>
       <div className="protocol-layout"><section className="protocol-card"><div className="protocol-top"><div><span className="tiny-label">Group protocol</span><h2>{studentPrompt}</h2></div><span className="duration">10 min</span></div><ol className="timeline">{protocol.map((step, index) => <li key={step.id}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{step.title}</strong><p>{step.description}</p></div><em>{step.duration}</em></li>)}</ol></section><aside className="protocol-side"><div className="approved-stamp">{approved ? icon.check : "…"}<span>{approved ? "Approved" : "Draft"}</span></div><h3>Teacher move</h3><p>{teacherMove}</p><div className="prompt-callout"><span>Student prompt</span><strong>“{studentPrompt}”</strong></div><button className="outline full" onClick={openEditor}>Edit discussion plan {icon.edit}</button></aside></div>
+      <ClassroomHandoff group={group} viewpoints={viewpoints} prompt={studentPrompt} onOpenStudentCard={() => setStudentPreview(true)} />
       <div className="page-actions"><p><span>{icon.shield}</span> No AI answer appears in student view. Students receive claims, evidence, a timed prompt, and an independent exit ticket.</p><button className="primary" onClick={() => setStudentPreview(true)}>Open classroom group card <span>{icon.arrow}</span></button></div>
     </>}
   </div>;
+}
+
+function ClassroomHandoff({ group, viewpoints, prompt, onOpenStudentCard }: {
+  group: DiscussionGroup;
+  viewpoints: Viewpoint[];
+  prompt: string;
+  onOpenStudentCard: () => void;
+}) {
+  const groupName = group.id.replace("group-", "Group ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+  return <section className="handoff-preview" aria-label="Teacher and student classroom handoff">
+    <div className="handoff-teacher">
+      <span className="tiny-label">Teacher dashboard</span>
+      <h3>One approved launch, two clear perspectives.</h3>
+      <p>The teacher retains the evidence ledger and discussion controls. Each learner receives only a small, anonymous evidence card — never an AI verdict or another student’s identity.</p>
+      <div className="handoff-checks"><span>{icon.check} Teacher-approved prompt</span><span>{icon.check} Mixed-reasoning group</span><span>{icon.check} Independent exit ticket</span></div>
+      <button className="outline" onClick={onOpenStudentCard}>Preview student mobile card <span>{icon.arrow}</span></button>
+    </div>
+    <div className="student-mobile-shell">
+      <div className="student-mobile-top"><span>Student mobile card</span><strong>{groupName}</strong></div>
+      <article className="student-mobile-card">
+        <div className="mobile-timer"><span>Discussion</span><strong>08:00</strong></div>
+        <h4>{prompt}</h4>
+        <div className="mobile-ideas">{group.members.map((member) => {
+          const label = viewpoints.find((item) => item.id === member.viewpoint) ?? viewpoints[0];
+          return <div className={label.color} key={member.id}><span>{label.badge}</span><strong>“{member.claim}”</strong></div>;
+        })}</div>
+        <small>What observation would change your mind?</small>
+      </article>
+    </div>
+  </section>;
 }
 
 function StudentPreview({ group, viewpoints, protocol, prompt, onBack, onComplete }: {
@@ -630,6 +744,7 @@ function StudentPreview({ group, viewpoints, protocol, prompt, onBack, onComplet
   const [evidence, setEvidence] = useState("If there is no air, the shape cannot slow either sphere down.");
   const [counterpoint, setCounterpoint] = useState("");
   const [shift, setShift] = useState<Revision["shift"]>("changed");
+  const [namedNewEvidence, setNamedNewEvidence] = useState(true);
   const [secondsRemaining, setSecondsRemaining] = useState(8 * 60);
   const [timerRunning, setTimerRunning] = useState(false);
   const [error, setError] = useState("");
@@ -653,16 +768,18 @@ function StudentPreview({ group, viewpoints, protocol, prompt, onBack, onComplet
       setError("Add both a claim and the evidence that changed or supported it.");
       return;
     }
-    onComplete({ claim: claim.trim(), evidence: evidence.trim(), counterpoint: counterpoint.trim() || undefined, shift, savedAt: new Date().toISOString() });
+    onComplete({ id: `exit-${Date.now()}`, groupId: group.id, claim: claim.trim(), evidence: evidence.trim(), counterpoint: counterpoint.trim() || undefined, shift, namedNewEvidence, savedAt: new Date().toISOString() });
   };
 
-  return <div className="student-shell fade-in"><div className="student-top"><button onClick={onBack}>← Teacher view</button><span>{groupName} · Classroom card</span><div className="student-avatar">H</div></div><section className="student-card classroom-card"><div className="classroom-card-head"><div><div className="eyebrow">{groupName} · teacher-approved</div><h1>{prompt}</h1></div><div className="discussion-timer"><span>Discussion time</span><strong aria-live="polite">{timerLabel}</strong><div><button className="timer-button" onClick={() => setTimerRunning((value) => !value)} disabled={secondsRemaining === 0}>{timerRunning ? "Pause" : "Start"}</button><button className="timer-button reset" onClick={() => { setTimerRunning(false); setSecondsRemaining(8 * 60); }}>Reset</button></div></div></div><p>Listen for evidence, not a winning answer. Start by accurately restating one anonymous idea before you challenge it.</p><div className="moment-rhythm">{protocol.map((step, index) => <span key={step.id}><b>{String(index + 1).padStart(2, "0")}</b>{step.title}<small>{step.duration}</small></span>)}</div><div className="student-ideas">{group.members.map((member) => { const label = viewpoints.find((item) => item.id === member.viewpoint) ?? viewpoints[0]; return <article className={label.color} key={member.id}><span>Anonymous idea · {label.badge}</span><strong>“{member.claim}”</strong><small>Evidence named: “{member.evidence}”</small></article>; })}</div><div className="counterpoint-box"><span className="tiny-label">Counterpoint question</span><strong>What observation, example, or condition would change your mind?</strong><textarea aria-label="Counterpoint question" value={counterpoint} onChange={(event) => setCounterpoint(event.target.value)} placeholder="Write one question your group should test…" /></div><div className="revision-box exit-ticket"><div><span className="tiny-label">Independent exit ticket · 2 questions</span><p>Your teacher sees only the response you choose to submit; this is formative evidence, not a grade.</p></div><label htmlFor="claim">1. After the discussion, my best claim is…</label><textarea id="claim" value={claim} onChange={(event) => setClaim(event.target.value)} /><label htmlFor="evidence">2. The evidence that mattered was…</label><textarea id="evidence" value={evidence} onChange={(event) => setEvidence(event.target.value)} /><fieldset className="reasoning-signal"><legend>My thinking after discussion</legend><label><input type="radio" name="shift" value="changed" checked={shift === "changed"} onChange={() => setShift("changed")} /> It changed</label><label><input type="radio" name="shift" value="strengthened" checked={shift === "strengthened"} onChange={() => setShift("strengthened")} /> It strengthened</label><label><input type="radio" name="shift" value="still-thinking" checked={shift === "still-thinking"} onChange={() => setShift("still-thinking")} /> I am still thinking</label></fieldset>{error && <p className="form-error">{error}</p>}<button className="primary" onClick={submit}>Save exit ticket <span>{icon.arrow}</span></button></div></section></div>;
+  return <div className="student-shell fade-in"><div className="student-top"><button onClick={onBack}>← Teacher view</button><span>{groupName} · Classroom card</span><div className="student-avatar">H</div></div><section className="student-card classroom-card"><div className="classroom-card-head"><div><div className="eyebrow">{groupName} · teacher-approved</div><h1>{prompt}</h1></div><div className="discussion-timer"><span>Discussion time</span><strong aria-live="polite">{timerLabel}</strong><div><button className="timer-button" onClick={() => setTimerRunning((value) => !value)} disabled={secondsRemaining === 0}>{timerRunning ? "Pause" : "Start"}</button><button className="timer-button reset" onClick={() => { setTimerRunning(false); setSecondsRemaining(8 * 60); }}>Reset</button></div></div></div><p>Listen for evidence, not a winning answer. Start by accurately restating one anonymous idea before you challenge it.</p><div className="moment-rhythm">{protocol.map((step, index) => <span key={step.id}><b>{String(index + 1).padStart(2, "0")}</b>{step.title}<small>{step.duration}</small></span>)}</div><div className="student-ideas">{group.members.map((member) => { const label = viewpoints.find((item) => item.id === member.viewpoint) ?? viewpoints[0]; return <article className={label.color} key={member.id}><span>Anonymous idea · {label.badge}</span><strong>“{member.claim}”</strong><small>Evidence named: “{member.evidence}”</small></article>; })}</div><div className="counterpoint-box"><span className="tiny-label">Counterpoint question</span><strong>What observation, example, or condition would change your mind?</strong><textarea aria-label="Counterpoint question" value={counterpoint} onChange={(event) => setCounterpoint(event.target.value)} placeholder="Write one question your group should test…" /></div><div className="revision-box exit-ticket"><div><span className="tiny-label">Independent exit ticket · 2 questions</span><p>Your teacher sees only the response you choose to submit; this is formative evidence, not a grade.</p></div><label htmlFor="claim">1. After the discussion, my best claim is…</label><textarea id="claim" value={claim} onChange={(event) => setClaim(event.target.value)} /><label htmlFor="evidence">2. The evidence that mattered was…</label><textarea id="evidence" value={evidence} onChange={(event) => setEvidence(event.target.value)} /><label className="new-evidence-check"><input type="checkbox" checked={namedNewEvidence} onChange={(event) => setNamedNewEvidence(event.target.checked)} /> Our discussion surfaced a new observation, example, or condition I want to test.</label><fieldset className="reasoning-signal"><legend>My thinking after discussion</legend><label><input type="radio" name="shift" value="changed" checked={shift === "changed"} onChange={() => setShift("changed")} /> It changed</label><label><input type="radio" name="shift" value="strengthened" checked={shift === "strengthened"} onChange={() => setShift("strengthened")} /> It strengthened</label><label><input type="radio" name="shift" value="still-thinking" checked={shift === "still-thinking"} onChange={() => setShift("still-thinking")} /> I am still thinking</label></fieldset>{error && <p className="form-error">{error}</p>}<button className="primary" onClick={submit}>Save exit ticket <span>{icon.arrow}</span></button></div></section></div>;
 }
 
-function Evidence({ lesson, responses, revision, nextMove, onNotify, onRestart }: {
+function Evidence({ lesson, responses, revision, exitTickets, onLoadDemoCohort, nextMove, onNotify, onRestart }: {
   lesson: Lesson;
   responses: StudentResponse[];
   revision?: Revision;
+  exitTickets: Revision[];
+  onLoadDemoCohort: () => void;
   nextMove: string;
   onNotify: (message: string) => void;
   onRestart: () => void;
@@ -670,6 +787,12 @@ function Evidence({ lesson, responses, revision, nextMove, onNotify, onRestart }
   const counts = countReasoningPaths(responses);
   const note = createEvidenceNote({ lesson, responses, revision, nextMove });
   const impactSignal = revision ? formatReasoningShift(revision.shift) : null;
+  const impact = createImpactSummary(exitTickets.map((ticket, index) => ({
+    id: ticket.id ?? `local-ticket-${index}`,
+    shift: ticket.shift,
+    namedNewEvidence: ticket.namedNewEvidence ?? false
+  })));
+  const showingDemoCohort = exitTickets.length === stagedDemoExitTickets.length && exitTickets.every((ticket) => ticket.id?.startsWith("demo-exit-"));
   const paths: Array<{ key: ViewpointKey; label: string; className: string }> = [
     { key: "weight", label: "weight-first", className: "rose-bar" },
     { key: "gravity", label: "gravity-first", className: "blue-bar" },
@@ -694,7 +817,7 @@ function Evidence({ lesson, responses, revision, nextMove, onNotify, onRestart }
     onNotify("Evidence note downloaded as a plain-text teacher record.");
   };
 
-  return <div className="fade-in"><PageIntro eyebrow="Step 05 / Impact loop" title="A better next conversation, not a grade." text="Counterpoint makes a small, reviewable bridge from the reasoning students brought in to the evidence they choose to name after discussion." /><div className="evidence-layout"><section className="evidence-card"><div className="evidence-head"><div><span className="tiny-label">Classroom evidence</span><h2>Reasoning before and after the conversation</h2></div><span className="review-pill">Teacher review</span></div><div className="flow-chart"><div><strong>Before discussion</strong>{paths.map((path) => <span className={`bar ${path.className}`} style={{ width: `${Math.max(20, (counts[path.key] / responses.length) * 100)}%` }} key={path.key}>{counts[path.key]} {path.label}</span>)}</div><div className="flow-arrow">→</div><div><strong>After discussion</strong><span className="after-evidence"><b>{revision ? "1" : "0"}</b> submitted exit ticket{revision ? "" : "s"}</span><small>Counterpoint never invents a class-wide shift. It records only submitted, independent reflections.</small></div></div><div className="impact-loop"><span className="tiny-label">Two-question impact loop</span><div><strong>1. Best claim</strong><strong>2. Evidence that mattered</strong></div>{revision && <p><b>{icon.check}</b> Learner signal: <em>{impactSignal}</em></p>}</div><div className="evidence-quote"><span>{revision ? "Saved exit ticket" : "Revision signal"}</span><p>{revision ? `“${revision.claim}”` : "No student exit ticket has been saved in this demo session yet."}</p>{revision && <><strong>Evidence named:</strong><small>“{revision.evidence}” · anonymous student reflection</small>{revision.counterpoint && <small>Counterpoint question: “{revision.counterpoint}”</small>}</>}</div></section><aside className="next-step"><span className="spark">{icon.spark}</span><span className="tiny-label">Suggested next move</span><h3>{nextMove}</h3><p>Export a short teacher-owned note for planning or reflection. It is not a grade, compliance record, or student profile.</p><button className="outline full" onClick={copyNote}>Copy evidence note {icon.edit}</button><button className="text-action" onClick={downloadNote}>Download .txt</button></aside></div><div className="page-actions"><p><span>{icon.check}</span> Evidence note stays editable and teacher-owned.</p><button className="primary" onClick={onRestart}>Restart the demo <span>↻</span></button></div></div>;
+  return <div className="fade-in"><PageIntro eyebrow="Step 05 / Impact loop" title="A better next conversation, not a grade." text="Counterpoint makes a small, reviewable bridge from the reasoning students brought in to the evidence they choose to name after discussion." /><div className="evidence-layout"><section className="evidence-card"><div className="evidence-head"><div><span className="tiny-label">Classroom evidence</span><h2>Reasoning before and after the conversation</h2></div><span className="review-pill">Teacher review</span></div><div className="flow-chart"><div><strong>Before discussion</strong>{paths.map((path) => <span className={`bar ${path.className}`} style={{ width: `${Math.max(20, (counts[path.key] / responses.length) * 100)}%` }} key={path.key}>{counts[path.key]} {path.label}</span>)}</div><div className="flow-arrow">→</div><div><strong>After discussion</strong><span className="after-evidence"><b>{impact.total}</b> submitted exit ticket{impact.total === 1 ? "" : "s"}</span><small>Counterpoint aggregates only independent submissions; it never infers a class-wide outcome.</small></div></div><section className={`impact-summary ${showingDemoCohort ? "fixture" : ""}`}><div className="impact-summary-head"><div><span className="tiny-label">Discussion reflection snapshot</span><strong>{impact.total ? `${impact.total} anonymous exit tickets` : "No submitted exit tickets yet"}</strong></div>{showingDemoCohort && <span className="fixture-tag">Fictional demo cohort</span>}</div>{impact.total > 0 ? <><div className="impact-metrics"><div><b>{impact.namedNewEvidencePercent}%</b><span>named a new observation, example, or condition to test</span></div><div><b>{impact.changedOrStrengthenedPercent}%</b><span>self-reported changed or strengthened reasoning</span></div></div><div className="impact-distribution" aria-label="Exit ticket reasoning signals"><span className="changed" style={{ width: `${(impact.changed / impact.total) * 100}%` }}>Changed · {impact.changed}</span><span className="strengthened" style={{ width: `${(impact.strengthened / impact.total) * 100}%` }}>Strengthened · {impact.strengthened}</span><span className="still-thinking" style={{ width: `${(impact.stillThinking / impact.total) * 100}%` }}>Still testing · {impact.stillThinking}</span></div><small>These are formative self-reports, not grades or proof of causation.</small></> : <div className="impact-empty"><p>Use the classroom card to collect an actual reflection, or load the clearly labeled staged cohort for the public demo.</p><button className="outline" onClick={onLoadDemoCohort}>Load staged demo check-in <span>{icon.arrow}</span></button></div>}{impact.total > 0 && !showingDemoCohort && <button className="text-action demo-cohort-button" onClick={onLoadDemoCohort}>Preview fictional class cohort for the demo ↗</button>}</section><div className="impact-loop"><span className="tiny-label">Two-question impact loop</span><div><strong>1. Best claim</strong><strong>2. Evidence that mattered</strong></div>{revision && <p><b>{icon.check}</b> Latest learner signal: <em>{impactSignal}</em></p>}</div><div className="evidence-quote"><span>{revision ? "Latest saved exit ticket" : "Revision signal"}</span><p>{revision ? `“${revision.claim}”` : "No student exit ticket has been saved in this demo session yet."}</p>{revision && <><strong>Evidence named:</strong><small>“{revision.evidence}” · anonymous student reflection</small>{revision.counterpoint && <small>Counterpoint question: “{revision.counterpoint}”</small>}</>}</div></section><aside className="next-step"><span className="spark">{icon.spark}</span><span className="tiny-label">Suggested next move</span><h3>{nextMove}</h3><p>Export a short teacher-owned note for planning or reflection. It is not a grade, compliance record, or student profile.</p><button className="outline full" onClick={copyNote}>Copy evidence note {icon.edit}</button><button className="text-action" onClick={downloadNote}>Download .txt</button></aside></div><div className="page-actions"><p><span>{icon.check}</span> Evidence note stays editable and teacher-owned.</p><button className="primary" onClick={onRestart}>Restart the demo <span>↻</span></button></div></div>;
 }
 
 function PageIntro({ eyebrow, title, text }: { eyebrow: string; title: string; text: string }) {
